@@ -1,0 +1,6 @@
+# Replaces the OLX site every account connects to. Accounts normally use the site
+# chosen when signing in, so this is only for testing against another server.
+site: ""
+
+# How often to check for new messages, in seconds.
+poll_interval: 15
