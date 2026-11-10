@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -19,6 +21,7 @@ const (
 	fieldAccess    = "com.enden.servuso.olx.login.access_token"
 	fieldRefresh   = "com.enden.servuso.olx.login.refresh_token"
 	fieldClientID  = "com.enden.servuso.olx.login.client_id"
+	fieldSignIn    = "com.enden.servuso.olx.login.sign_in_cookie"
 	// The site of accounts signed in before each kept its own.
 	defaultSite = "www.olx.pl"
 )
@@ -92,9 +95,27 @@ func (l *websiteLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 			// The session is only in the site's storage under a name that varies,
 			// so a client that can't run the script can't sign in.
 			JSRequired: true,
-			Fields:     []bridgev2.LoginCookieField{field(fieldAccess), field(fieldRefresh), field(fieldClientID)},
+			Fields: []bridgev2.LoginCookieField{
+				field(fieldAccess), field(fieldRefresh), field(fieldClientID), signInCookieField(site),
+			},
 		},
 	}, nil
+}
+
+// signInCookieField asks for the cookies of the sign-in site, which is where you
+// sign in, so a session that lapses can be renewed as the website renews its
+// own. A client that can't read them still signs in, but has to sign in again
+// once the refresh token lapses.
+func signInCookieField(site *url.URL) bridgev2.LoginCookieField {
+	auth := olx.NewClient(site, "", "", olx.Tokens{}).AuthURL
+	return bridgev2.LoginCookieField{
+		ID: fieldSignIn,
+		Sources: []bridgev2.LoginCookieFieldSource{{
+			Type:            bridgev2.LoginCookieTypeRequestHeader,
+			Name:            "Cookie",
+			RequestURLRegex: "^" + regexp.QuoteMeta(auth.Scheme+"://"+auth.Host) + "/",
+		}},
+	}
 }
 
 // extractSessionScript reads the session OLX's site keeps in its local storage. As
@@ -127,7 +148,10 @@ func (l *websiteLogin) SubmitCookies(ctx context.Context, cookies map[string]str
 	if err != nil {
 		return nil, err
 	}
-	tokens := olx.Tokens{AccessToken: access, RefreshToken: refresh, ExpiresAt: claims.ExpiresAt}
+	tokens := olx.Tokens{
+		AccessToken: access, RefreshToken: refresh, ExpiresAt: claims.ExpiresAt,
+		SignInCookie: cookies[fieldSignIn],
+	}
 	// Fails here rather than later if the session doesn't work outside the browser.
 	if _, err = olx.NewClient(site, clientID, claims.UserUUID, tokens).ListThreads(ctx); err != nil {
 		return nil, fmt.Errorf("OLX didn't accept the session from the bridge: %w", err)

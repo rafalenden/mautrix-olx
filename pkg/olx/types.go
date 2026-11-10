@@ -11,6 +11,11 @@ type Tokens struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// SignInCookie is the Cookie header for the sign-in site (login.olx.pl). The
+	// refresh token stops working after a while unused, such as while the Mac
+	// sleeps; this sign-in outlasts it, and gets a new session as OLX's own
+	// website does then. Empty for an account signed in without it.
+	SignInCookie string `json:"sign_in_cookie,omitempty"`
 }
 
 type User struct {

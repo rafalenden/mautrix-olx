@@ -178,7 +178,21 @@ func (c *Client) accessToken(ctx context.Context, rejected string) (string, erro
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized {
-		return "", fmt.Errorf("%w: %w", ErrSignedOut, readError(response))
+		rejected := fmt.Errorf("%w: %w", ErrSignedOut, readError(response))
+		if current.SignInCookie == "" {
+			return "", rejected
+		}
+		// The refresh token lapses when unused for a while. The sign-in site's
+		// cookie outlasts it, as it does for the website.
+		fresh, err := c.signInAgain(ctx, current.SignInCookie)
+		if err != nil {
+			return "", err
+		}
+		c.tokens = fresh
+		if c.OnTokens != nil {
+			c.OnTokens(fresh)
+		}
+		return fresh.AccessToken, nil
 	} else if response.StatusCode >= 300 {
 		return "", readError(response)
 	}
@@ -194,6 +208,7 @@ func (c *Client) accessToken(ctx context.Context, rejected string) (string, erro
 	if fresh.RefreshToken == "" {
 		fresh.RefreshToken = current.RefreshToken
 	}
+	fresh.SignInCookie = current.SignInCookie
 	c.tokens = fresh
 	if c.OnTokens != nil {
 		c.OnTokens(fresh)
