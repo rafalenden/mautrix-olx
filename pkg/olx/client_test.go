@@ -299,6 +299,32 @@ func TestOffersAreRecognised(t *testing.T) {
 	}
 }
 
+// OLX's own lines lose their heading, and are OLX's even when they're listed
+// before OLX has marked them so, filed under your own account.
+func TestOLXsOwnLines(t *testing.T) {
+	client := NewClient(&url.URL{Scheme: "https", Host: "example.test"}, "c", "me", Tokens{})
+	messages := client.toMessages(chatConversation{ID: "c", Messages: []chatMessage{
+		{ID: "a", Type: "system", UserUUID: "me", Text: "• Automatic message •\nItem bought.",
+			Extras: json.RawMessage(`{"text":"Item bought."}`)},
+		{ID: "b", UserUUID: "me", Text: "• Automatic message •\nItem bought."},
+		{ID: "c", Type: "system", Text: "Price lowered for you", Extras: json.RawMessage(`{"text":"Price lowered for you"}`)},
+		{ID: "d", UserUUID: "me", Text: "• a list item •"},
+		{ID: "e", UserUUID: "me", Text: "Bullets • in the middle •\nare words"},
+	}})
+	want := []struct {
+		system bool
+		text   string
+	}{
+		{true, "Item bought."}, {true, "Item bought."}, {true, "Price lowered for you"},
+		{false, "• a list item •"}, {false, "Bullets • in the middle •\nare words"},
+	}
+	for i, w := range want {
+		if messages[i].IsSystem != w.system || messages[i].Text != w.text {
+			t.Errorf("%s: system %v text %q, want %v %q", messages[i].UUID, messages[i].IsSystem, messages[i].Text, w.system, w.text)
+		}
+	}
+}
+
 // OLX says when each message was read, so the thread knows the newest of yours
 // the other person has read. Their own messages' reads are yours, and don't count.
 func TestThreadKnowsWhatTheyveRead(t *testing.T) {

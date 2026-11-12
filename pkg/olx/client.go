@@ -340,7 +340,7 @@ func (c *Client) toThread(conversation chatConversation) Thread {
 		thread.LatestKey = messages[len(messages)-1].Key()
 	}
 	for _, message := range slices.Backward(messages) {
-		if message.Type == MessageSent && message.ReadAt != "" {
+		if message.Type == MessageSent && !message.IsSystem && message.ReadAt != "" {
 			thread.ReadByThem, thread.ReadByThemAt = message.Key(), message.ReadAt
 			break
 		}
@@ -364,13 +364,20 @@ func (c *Client) toMessages(conversation chatConversation) []Message {
 		if source.UserUUID == c.UserUUID {
 			message.Type = MessageSent
 		}
-		if message.Text == "" {
-			var extras struct {
-				Text string `json:"text"`
-			}
-			if json.Unmarshal(source.Extras, &extras) == nil {
-				message.Text = extras.Text
-			}
+		var extras struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(source.Extras, &extras)
+		// OLX's own lines open with a heading such as "• Automatyczna wiadomość
+		// od OLX •", and keep the line without it in extras. One can be listed
+		// for a moment before it's marked as OLX's, filed under whoever's
+		// conversation it is, so the heading also marks it.
+		if body, ok := withoutOLXHeading(message.Text); ok {
+			message.IsSystem = true
+			message.Text = body
+		}
+		if message.Text == "" || (message.IsSystem && extras.Text != "") {
+			message.Text = extras.Text
 		}
 		for _, attachment := range source.Attachments {
 			if file := attachmentFrom(attachment); file.URL != "" {
@@ -383,6 +390,18 @@ func (c *Client) toMessages(conversation chatConversation) []Message {
 		return ParseTime(a.CreatedAt, time.UTC).Compare(ParseTime(b.CreatedAt, time.UTC))
 	})
 	return messages
+}
+
+// withoutOLXHeading takes off the heading OLX puts on its own lines, a first line
+// set between bullets ("• … •"), and reports whether there was one.
+func withoutOLXHeading(text string) (string, bool) {
+	first, rest, found := strings.Cut(text, "\n")
+	first = strings.TrimSpace(first)
+	rest = strings.TrimSpace(rest)
+	if !found || rest == "" || len(first) < 3 || !strings.HasPrefix(first, "•") || !strings.HasSuffix(first, "•") {
+		return text, false
+	}
+	return rest, true
 }
 
 func attachmentFrom(fields map[string]any) Attachment {
