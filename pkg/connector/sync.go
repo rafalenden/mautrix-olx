@@ -89,7 +89,12 @@ func (c *Client) poll(ctx context.Context) error {
 		messagesChanged := !known || previous.TotalCount != thread.TotalCount ||
 			(thread.LatestKey != "" && networkid.MessageID(thread.LatestKey) != previous.LastMessage)
 		readChanged := thread.ReadByThem != "" && networkid.MessageID(thread.ReadByThem) != previous.ReadByThem
-		if !messagesChanged && !readChanged && previous.UnreadCount == thread.UnreadCount {
+		// The newest message of yours that hasn't been marked delivered, wherever
+		// it came from: sent on OLX itself, or history brought in with the chat.
+		// One they've read needs no mark.
+		deliveredChanged := thread.LatestOwn != "" && thread.LatestOwn != thread.ReadByThem &&
+			networkid.MessageID(thread.LatestOwn) != previous.Delivered
+		if !messagesChanged && !readChanged && !deliveredChanged && previous.UnreadCount == thread.UnreadCount {
 			continue
 		}
 		next := previous
@@ -111,6 +116,11 @@ func (c *Client) poll(ctx context.Context) error {
 		}
 		if known && previous.UnreadCount > 0 && thread.UnreadCount == 0 && next.LastMessage != "" {
 			c.queueReadOnOLX(thread, next.LastMessage)
+		}
+		if deliveredChanged {
+			// Queued after the thread's messages, so the one it's about is there.
+			c.queueDelivered(c.portalKey(key), c.sender(olx.MessageReceived, thread), networkid.MessageID(thread.LatestOwn))
+			next.Delivered = networkid.MessageID(thread.LatestOwn)
 		}
 		if readChanged {
 			c.queueReadByThem(thread)
@@ -170,10 +180,6 @@ func (c *Client) queueMessages(thread olx.Thread, previous ThreadProgress, known
 				return c.convertMessage(ctx, portal, intent, data), nil
 			},
 		})
-		// Sent on OLX itself: it's there for them as soon as it's there for you.
-		if message.Type == olx.MessageSent && !message.IsSystem {
-			c.queueDelivered(c.portalKey(thread.Key()), c.sender(olx.MessageReceived, thread), networkid.MessageID(message.Key()))
-		}
 	}
 }
 

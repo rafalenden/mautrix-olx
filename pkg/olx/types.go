@@ -32,6 +32,8 @@ type Thread struct {
 	UnreadCount    int
 	// LatestKey is the newest message's key.
 	LatestKey string
+	// LatestOwn is the newest message you wrote yourself.
+	LatestOwn string
 	// ReadByThem is the newest of your messages the other person has read, and
 	// ReadByThemAt when they read it. OLX says when each message was read, but
 	// not when one reached the other side.

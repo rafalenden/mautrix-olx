@@ -340,6 +340,12 @@ func (c *Client) toThread(conversation chatConversation) Thread {
 		thread.LatestKey = messages[len(messages)-1].Key()
 	}
 	for _, message := range slices.Backward(messages) {
+		if message.Type == MessageSent && !message.IsSystem {
+			thread.LatestOwn = message.Key()
+			break
+		}
+	}
+	for _, message := range slices.Backward(messages) {
 		if message.Type == MessageSent && !message.IsSystem && message.ReadAt != "" {
 			thread.ReadByThem, thread.ReadByThemAt = message.Key(), message.ReadAt
 			break

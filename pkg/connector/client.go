@@ -47,6 +47,8 @@ type ThreadProgress struct {
 	// ReadByThem is the newest of your messages the other person has been
 	// reported to have read.
 	ReadByThem networkid.MessageID `json:"read_by_them,omitempty"`
+	// Delivered is the newest of your messages that's been marked delivered.
+	Delivered networkid.MessageID `json:"delivered,omitempty"`
 }
 
 // Client is one signed-in OLX account.
@@ -308,6 +310,10 @@ func (c *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMe
 	}
 	// Handled after this message is saved, as the portal takes events in turn.
 	c.queueDelivered(msg.Portal.PortalKey, bridgev2.EventSender{Sender: msg.Portal.OtherUserID}, id)
+	if progress, known := c.progress(threadKey); known {
+		progress.Delivered = id
+		c.setProgress(ctx, map[string]ThreadProgress{threadKey: progress})
+	}
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
 			ID:        id,

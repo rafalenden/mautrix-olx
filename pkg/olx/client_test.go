@@ -344,4 +344,7 @@ func TestThreadKnowsWhatTheyveRead(t *testing.T) {
 	if got := threads[0]; got.ReadByThem != "m1" || got.ReadByThemAt != "2026-01-01T12:00:00.5Z" {
 		t.Errorf("read by them = %q at %q, want m1", got.ReadByThem, got.ReadByThemAt)
 	}
+	if got := threads[0].LatestOwn; got != "m3" {
+		t.Errorf("latest own = %q, want m3", got)
+	}
 }
