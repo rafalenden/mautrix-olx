@@ -38,6 +38,9 @@ type UserLoginMetadata struct {
 	// OfferLinksAdded records that offers bridged before they carried a link to
 	// answer them on OLX have been edited to carry one.
 	OfferLinksAdded bool `json:"offer_links_added,omitempty"`
+	// OwnOfferLinksRemoved records that your own offers, which carried that link
+	// for a while though there's nothing to answer on them, have lost it.
+	OwnOfferLinksRemoved bool `json:"own_offer_links_removed,omitempty"`
 }
 
 type ThreadProgress struct {

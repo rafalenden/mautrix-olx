@@ -114,6 +114,21 @@ func TestRespondLinkIsInBothBodies(t *testing.T) {
 	}
 }
 
+// Only the other person's offer is one to answer; yours has nothing to answer.
+func TestOnlyTheirOffersAreAnswerable(t *testing.T) {
+	theirs := olx.Message{IsOffer: true, Type: olx.MessageReceived, ThreadUUID: "c1"}
+	mine := olx.Message{IsOffer: true, Type: olx.MessageSent, ThreadUUID: "c1"}
+	words := olx.Message{Type: olx.MessageReceived, ThreadUUID: "c1"}
+	if !answerable(theirs) || answerable(mine) || answerable(words) {
+		t.Errorf("answerable: theirs %v, mine %v, words %v", answerable(theirs), answerable(mine), answerable(words))
+	}
+	// Offers bridged earlier: all of them if links were never added, else yours.
+	if !needsLinkFix(theirs, false) || !needsLinkFix(mine, false) || needsLinkFix(theirs, true) ||
+		!needsLinkFix(mine, true) || needsLinkFix(words, false) {
+		t.Error("the wrong offers would be edited")
+	}
+}
+
 func TestListingTopic(t *testing.T) {
 	price := int64(150000)
 	odd := int64(129950)

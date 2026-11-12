@@ -81,7 +81,7 @@ func (c *Client) poll(ctx context.Context) error {
 	}
 	updates := map[string]ThreadProgress{}
 	defer func() { c.setProgress(ctx, updates) }()
-	c.addOfferLinksOnce(ctx, threads)
+	c.fixOfferLinksOnce(ctx, threads)
 	for _, thread := range threads {
 		key := thread.Key()
 		previous, known := c.progress(key)
@@ -334,7 +334,7 @@ func (c *Client) convertMessage(ctx context.Context, portal *bridgev2.Portal, in
 		if message.IsSystem {
 			part.Content.MsgType = event.MsgNotice
 		}
-		if message.IsOffer && message.ThreadUUID != "" {
+		if answerable(message) {
 			addRespondLink(part.Content, c.api.ConversationURL(message.ThreadUUID))
 		}
 		converted.Parts = append(converted.Parts, part)
@@ -381,6 +381,12 @@ func (c *Client) convertFile(ctx context.Context, portal *bridgev2.Portal, inten
 		File:     encrypted,
 		Info:     &event.FileInfo{MimeType: mimeType, Size: len(data)},
 	}
+}
+
+// answerable is whether a message is an offer for you to answer: the other
+// person's, as there's nothing to answer on your own.
+func answerable(message olx.Message) bool {
+	return message.IsOffer && message.Type != olx.MessageSent && message.ThreadUUID != ""
 }
 
 // addRespondLink lets an offer be answered on OLX, as a link in the formatted body,
@@ -459,25 +465,29 @@ func (c *Client) updateRoomInfoIfChanged(ctx context.Context, thread olx.Thread)
 	}
 }
 
-// addOfferLinksOnce edits offers bridged before they carried a link to answer them
-// on OLX. It runs on the first poll after an update, and again later if it couldn't
-// read every thread. The text is unchanged: only the link is added.
-func (c *Client) addOfferLinksOnce(ctx context.Context, threads []olx.Thread) {
+// fixOfferLinksOnce edits offers bridged under an earlier rule, once: those from
+// before offers carried a link to answer them on OLX gain it, and your own
+// offers, which carried one for a while, lose it. Chats bridged from now on
+// need neither.
+func (c *Client) fixOfferLinksOnce(ctx context.Context, threads []olx.Thread) {
 	c.metaLock.Lock()
-	done, known := c.meta.OfferLinksAdded, len(c.meta.Threads) > 0
+	added, removed, known := c.meta.OfferLinksAdded, c.meta.OwnOfferLinksRemoved, len(c.meta.Threads) > 0
 	c.metaLock.Unlock()
-	if !done && known {
+	if added && removed {
+		return
+	}
+	if known {
 		for _, thread := range threads {
 			if _, bridged := c.progress(thread.Key()); !bridged {
 				continue
 			}
 			messages, err := c.api.ListMessages(ctx, thread.Key())
 			if err != nil {
-				zerolog.Ctx(ctx).Warn().Err(err).Str("thread", thread.Key()).Msg("Couldn't read OLX thread to link its offers")
+				zerolog.Ctx(ctx).Warn().Err(err).Str("thread", thread.Key()).Msg("Couldn't read OLX thread to fix its offers' links")
 				return
 			}
 			for _, message := range messages {
-				if message.IsOffer {
+				if needsLinkFix(message, added) {
 					c.queueOfferLink(thread, message)
 				}
 			}
@@ -485,16 +495,22 @@ func (c *Client) addOfferLinksOnce(ctx context.Context, threads []olx.Thread) {
 	}
 	c.metaLock.Lock()
 	defer c.metaLock.Unlock()
-	if c.meta.OfferLinksAdded {
-		return
-	}
-	c.meta.OfferLinksAdded = true
+	c.meta.OfferLinksAdded, c.meta.OwnOfferLinksRemoved = true, true
 	if err := c.login.Save(ctx); err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to save OLX offer links")
 	}
 }
 
-// queueOfferLink edits one bridged offer to carry its link. A message that was never
+// needsLinkFix is whether an offer bridged earlier has to be edited: every offer
+// if links were never added, otherwise only your own, to take theirs off.
+func needsLinkFix(message olx.Message, linksAdded bool) bool {
+	if !message.IsOffer {
+		return false
+	}
+	return !linksAdded || message.Type == olx.MessageSent
+}
+
+// queueOfferLink edits one bridged offer to carry its link, or to lose it. A message that was never
 // bridged is skipped by the bridge, which finds nothing to edit.
 func (c *Client) queueOfferLink(thread olx.Thread, message olx.Message) {
 	id := networkid.MessageID(message.Key())
