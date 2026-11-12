@@ -34,6 +34,8 @@ type Thread struct {
 	LatestKey string
 	// LatestOwn is the newest message you wrote yourself.
 	LatestOwn string
+	// LatestTheirOffer is the other person's newest offer, if they've made one.
+	LatestTheirOffer *Message
 	// ReadByThem is the newest of your messages the other person has read, and
 	// ReadByThemAt when they read it. OLX says when each message was read, but
 	// not when one reached the other side.

@@ -297,6 +297,14 @@ func TestOffersAreRecognised(t *testing.T) {
 	if !messages[0].IsOffer || messages[1].IsOffer {
 		t.Errorf("unexpected offers %+v", messages)
 	}
+	thread := client.toThread(chatConversation{ID: "c", Messages: []chatMessage{
+		{ID: "a", CreatedAt: "2026-01-01T10:00:00Z", Type: "custom:price_negotiation_widget_seller_proposed"},
+		{ID: "b", CreatedAt: "2026-01-02T10:00:00Z", UserUUID: "me", Type: "custom:price_negotiation_widget_buyer_proposed"},
+		{ID: "c", CreatedAt: "2026-01-03T10:00:00Z", Text: "Hej"},
+	}})
+	if thread.LatestTheirOffer == nil || thread.LatestTheirOffer.Key() != "a" || thread.LatestTheirOffer.ThreadUUID != "c" {
+		t.Errorf("their newest offer = %+v, want a", thread.LatestTheirOffer)
+	}
 }
 
 // OLX's own lines lose their heading, and are OLX's even when they're listed

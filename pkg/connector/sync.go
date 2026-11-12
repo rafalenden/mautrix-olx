@@ -94,7 +94,12 @@ func (c *Client) poll(ctx context.Context) error {
 		// One they've read needs no mark.
 		deliveredChanged := thread.LatestOwn != "" && thread.LatestOwn != thread.ReadByThem &&
 			networkid.MessageID(thread.LatestOwn) != previous.Delivered
-		if !messagesChanged && !readChanged && !deliveredChanged && previous.UnreadCount == thread.UnreadCount {
+		// OLX can list an offer a moment before marking it as one, and it's then
+		// bridged as plain words. So once a thread has settled, their newest offer
+		// is checked: bridged with its link, or given it now.
+		offer := thread.LatestTheirOffer
+		offerUnchecked := !messagesChanged && offer != nil && networkid.MessageID(offer.Key()) != previous.LinkedOffer
+		if !messagesChanged && !readChanged && !deliveredChanged && !offerUnchecked && previous.UnreadCount == thread.UnreadCount {
 			continue
 		}
 		next := previous
@@ -121,6 +126,12 @@ func (c *Client) poll(ctx context.Context) error {
 			// Queued after the thread's messages, so the one it's about is there.
 			c.queueDelivered(c.portalKey(key), c.sender(olx.MessageReceived, thread), networkid.MessageID(thread.LatestOwn))
 			next.Delivered = networkid.MessageID(thread.LatestOwn)
+		}
+		if offerUnchecked {
+			if _, linked := c.linked.Load(offer.Key()); !linked {
+				c.queueOfferLink(thread, *offer)
+			}
+			next.LinkedOffer = networkid.MessageID(offer.Key())
 		}
 		if readChanged {
 			c.queueReadByThem(thread)
@@ -336,6 +347,7 @@ func (c *Client) convertMessage(ctx context.Context, portal *bridgev2.Portal, in
 		}
 		if answerable(message) {
 			addRespondLink(part.Content, c.api.ConversationURL(message.ThreadUUID))
+			c.linked.Store(message.Key(), true)
 		}
 		converted.Parts = append(converted.Parts, part)
 	}

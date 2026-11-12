@@ -346,6 +346,12 @@ func (c *Client) toThread(conversation chatConversation) Thread {
 		}
 	}
 	for _, message := range slices.Backward(messages) {
+		if message.IsOffer && message.Type == MessageReceived {
+			thread.LatestTheirOffer = &message
+			break
+		}
+	}
+	for _, message := range slices.Backward(messages) {
 		if message.Type == MessageSent && !message.IsSystem && message.ReadAt != "" {
 			thread.ReadByThem, thread.ReadByThemAt = message.Key(), message.ReadAt
 			break

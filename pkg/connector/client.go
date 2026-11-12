@@ -52,6 +52,8 @@ type ThreadProgress struct {
 	ReadByThem networkid.MessageID `json:"read_by_them,omitempty"`
 	// Delivered is the newest of your messages that's been marked delivered.
 	Delivered networkid.MessageID `json:"delivered,omitempty"`
+	// LinkedOffer is the other person's newest offer known to carry its link.
+	LinkedOffer networkid.MessageID `json:"linked_offer,omitempty"`
 }
 
 // Client is one signed-in OLX account.
@@ -67,6 +69,9 @@ type Client struct {
 	// Guards meta against token refreshes, which can happen during any request.
 	metaLock sync.Mutex
 	meta     *UserLoginMetadata
+
+	// Offers given their link since the bridge started, by message ID.
+	linked sync.Map
 
 	stop context.CancelFunc
 	done chan struct{}
