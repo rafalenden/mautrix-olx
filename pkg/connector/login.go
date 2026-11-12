@@ -12,7 +12,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/status"
 
-	"github.com/rafalenden/servuso/bridges/olx/pkg/olx"
+	"github.com/rafalenden/mautrix-olx/pkg/olx"
 )
 
 const (

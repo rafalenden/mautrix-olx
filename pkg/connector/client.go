@@ -17,7 +17,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 
-	"github.com/rafalenden/servuso/bridges/olx/pkg/olx"
+	"github.com/rafalenden/mautrix-olx/pkg/olx"
 )
 
 // UserLoginMetadata is what the bridge keeps for an account between runs.

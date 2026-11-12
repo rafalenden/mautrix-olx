@@ -10,7 +10,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 
-	"github.com/rafalenden/servuso/bridges/olx/pkg/olx"
+	"github.com/rafalenden/mautrix-olx/pkg/olx"
 )
 
 func keys(messages []olx.Message) string {

@@ -1,4 +1,4 @@
-module github.com/rafalenden/servuso/bridges/olx
+module github.com/rafalenden/mautrix-olx
 
 go 1.26.0
 

@@ -3,7 +3,7 @@ package main
 import (
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 
-	"github.com/rafalenden/servuso/bridges/olx/pkg/connector"
+	"github.com/rafalenden/mautrix-olx/pkg/connector"
 )
 
 // Filled in at build time with the -X linker flag.

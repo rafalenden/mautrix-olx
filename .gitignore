@@ -1,0 +1,7 @@
+/mautrix-olx
+*.db
+*.db-*
+config.yaml
+registration.yaml
+logs/
+.DS_Store
