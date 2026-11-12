@@ -167,11 +167,42 @@ func (c *Client) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
 	return string(userID) == string(c.login.ID)
 }
 
-// Capabilities: text only for now. The website has its own upload service for
-// files, which the bridge doesn't use.
+// The kinds of file OLX's site lets you attach, with a caption as the message's
+// words. Its site shrinks pictures over 5 MB itself, which the bridge doesn't,
+// so that's the most it takes.
+var (
+	sendablePictures = &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"image/jpeg": event.CapLevelFullySupported,
+			"image/png":  event.CapLevelFullySupported,
+		},
+		Caption: event.CapLevelFullySupported,
+		MaxSize: maxUploadSize,
+	}
+	sendableFiles = &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"image/jpeg":               event.CapLevelFullySupported,
+			"image/png":                event.CapLevelFullySupported,
+			"application/pdf":          event.CapLevelFullySupported,
+			"application/msword":       event.CapLevelFullySupported,
+			"application/vnd.ms-excel": event.CapLevelFullySupported,
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document": event.CapLevelFullySupported,
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       event.CapLevelFullySupported,
+		},
+		Caption: event.CapLevelFullySupported,
+		MaxSize: maxUploadSize,
+	}
+)
+
+const maxUploadSize = 5 * 1000 * 1000
+
 var roomFeatures = &event.RoomFeatures{
-	ID:           "com.enden.servuso.olx.capabilities.2026_11_07",
+	ID:           "com.enden.servuso.olx.capabilities.2026_11_12",
 	ReadReceipts: true,
+	File: event.FileFeatureMap{
+		event.MsgImage: sendablePictures,
+		event.MsgFile:  sendableFiles,
+	},
 }
 
 func (c *Client) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
@@ -280,23 +311,38 @@ func (c *Client) portalKey(threadKey string) networkid.PortalKey {
 // finds its ID already stored and skips it.
 func (c *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
 	var text string
+	var file *event.MessageEventContent
 	switch msg.Content.MsgType {
 	case event.MsgText, event.MsgNotice:
 		text = msg.Content.Body
 	case event.MsgEmote:
 		text = "* " + c.login.RemoteName + " " + msg.Content.Body
+	case event.MsgImage, event.MsgFile:
+		file = msg.Content
+		text = caption(file)
 	default:
 		return nil, bridgev2.ErrUnsupportedMessageType
 	}
-	if strings.TrimSpace(text) == "" {
+	if file == nil && strings.TrimSpace(text) == "" {
 		return nil, bridgev2.ErrUnsupportedMessageType
 	}
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	threadKey := string(msg.Portal.ID)
+	var attachments []olx.SentAttachment
+	if file != nil {
+		uploaded, err := c.upload(ctx, msg, file)
+		if errors.Is(err, olx.ErrSignedOut) {
+			c.reportSignedOut(err)
+			return nil, errSignedOutSend(err)
+		} else if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, uploaded)
+	}
 	sending := time.Now()
-	sentID, err := c.api.SendMessage(ctx, threadKey, text)
+	sentID, err := c.api.SendMessage(ctx, threadKey, text, attachments...)
 	if err != nil {
 		if errors.Is(err, olx.ErrSignedOut) {
 			c.reportSignedOut(err)
@@ -331,6 +377,42 @@ func (c *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMe
 	}, nil
 }
 
+// caption is the words sent with a file: its body, when that isn't just its name.
+func caption(file *event.MessageEventContent) string {
+	if file.FileName != "" && file.Body != file.FileName {
+		return file.Body
+	}
+	return ""
+}
+
+// upload takes a file from Matrix and puts it on OLX, ready to attach.
+func (c *Client) upload(ctx context.Context, msg *bridgev2.MatrixMessage, file *event.MessageEventContent) (olx.SentAttachment, error) {
+	name := file.FileName
+	if name == "" {
+		name = file.Body
+	}
+	unsendable := func(err error) error {
+		return bridgev2.WrapErrorInStatus(err).WithStatus(event.MessageStatusFail).
+			WithErrorReason(event.MessageStatusUnsupported).WithMessage("Not sent: " + err.Error() + ".").
+			WithIsCertain(true).WithSendNotice(true)
+	}
+	if !olx.CanSend(name) {
+		return olx.SentAttachment{}, unsendable(olx.ErrUnsendableFile)
+	}
+	data, err := msg.Portal.Bridge.Bot.DownloadMedia(ctx, file.URL, file.File)
+	if err != nil {
+		return olx.SentAttachment{}, fmt.Errorf("couldn't read the file to send: %w", err)
+	}
+	if len(data) > maxUploadSize {
+		return olx.SentAttachment{}, unsendable(errors.New("OLX takes files up to 5 MB"))
+	}
+	mimeType := http.DetectContentType(data)
+	if file.Info != nil && file.Info.MimeType != "" {
+		mimeType = file.Info.MimeType
+	}
+	return c.api.Upload(ctx, name, mimeType, data)
+}
+
 // sentLookupDelays are the waits before each look for a message just sent. OLX's
 // list can lag a send by a moment: one was missing half a second after OLX made it.
 var sentLookupDelays = []time.Duration{0, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
@@ -360,7 +442,7 @@ func (c *Client) findSent(ctx context.Context, threadKey, text, sentID string, s
 		}
 		for i := len(messages) - 1; i >= 0; i-- {
 			m := &messages[i]
-			if m.Type == olx.MessageSent && m.Text == text && !olx.ParseTime(m.CreatedAt, c.location).Before(earliest) {
+			if text != "" && m.Type == olx.MessageSent && m.Text == text && !olx.ParseTime(m.CreatedAt, c.location).Before(earliest) {
 				return m
 			}
 		}

@@ -15,7 +15,7 @@ This uses the API behind OLX's website, which OLX doesn't document. It can stop 
 | | From OLX | To OLX |
 |---|---|---|
 | Text | Yes | Yes |
-| Photos and files | Yes (the format hasn't been seen on real data yet) | No: the website uses its own upload service, which the bridge doesn't use |
+| Photos and files | Yes | Yes: JPEG and PNG pictures, PDFs, and Word and Excel files, up to 5 MB, with a caption. They go through the upload service OLX's site uses |
 | Chat history | Yes, as much as OLX returns | |
 | Marking a chat as read | Yes | Yes |
 | Delivered and read | Yes: a message OLX accepted is delivered, and OLX says when it was read | |

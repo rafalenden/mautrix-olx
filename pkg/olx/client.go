@@ -109,13 +109,15 @@ func ParseSession(accessToken string) (SessionClaims, error) {
 // own sign-in. OLX doesn't document this API, so it can change without notice.
 type Client struct {
 	// SiteURL is the site people browse, such as https://www.olx.pl.
-	SiteURL  *url.URL
-	ChatURL  *url.URL
-	AuthURL  *url.URL
-	SiteCode string
-	ClientID string
-	UserUUID string
-	HTTP     *http.Client
+	SiteURL *url.URL
+	ChatURL *url.URL
+	// UploadsURL is where files go before a message takes them.
+	UploadsURL string
+	AuthURL    *url.URL
+	SiteCode   string
+	ClientID   string
+	UserUUID   string
+	HTTP       *http.Client
 	// OnTokens is called whenever a refresh replaces the tokens, so they can be saved.
 	OnTokens func(Tokens)
 
@@ -130,16 +132,20 @@ type Client struct {
 // api.chat.olx.pl and sign-in at login.olx.pl. Any other address is used for both.
 func NewClient(site *url.URL, clientID, userUUID string, tokens Tokens) *Client {
 	chat, auth, code := site, site, "olxpl"
+	// Any other address, as in tests, takes uploads itself.
+	uploads := site.JoinPath("v1/temp-files").String()
 	if domain, ok := strings.CutPrefix(site.Host, "www.olx."); ok {
+		uploads = uploadsURL
 		chat = &url.URL{Scheme: "https", Host: "api.chat.olx." + domain}
 		auth = &url.URL{Scheme: "https", Host: "login.olx." + domain}
 		code = "olx" + domain
 	}
 	return &Client{
 		SiteURL: site, ChatURL: chat, AuthURL: auth, SiteCode: code, ClientID: clientID, UserUUID: userUUID,
-		HTTP:   &http.Client{Timeout: 60 * time.Second},
-		tokens: tokens,
-		users:  map[int64]*User{},
+		UploadsURL: uploads,
+		HTTP:       &http.Client{Timeout: 60 * time.Second},
+		tokens:     tokens,
+		users:      map[int64]*User{},
 	}
 }
 
@@ -535,9 +541,13 @@ func (c *Client) ListMessages(ctx context.Context, threadKey string) ([]Message,
 // SendMessage sends text and returns the ID it gave the message. OLX's reply
 // doesn't identify the message, but the ones the bridge has sent carry IDs of the
 // form it gives, so OLX appears to keep it.
-func (c *Client) SendMessage(ctx context.Context, threadKey, text string) (string, error) {
+func (c *Client) SendMessage(ctx context.Context, threadKey, text string, attachments ...SentAttachment) (string, error) {
 	id := newUUID()
-	body := map[string]any{"message": map[string]any{"text": text, "message_id": id}}
+	message := map[string]any{"text": text, "message_id": id}
+	if len(attachments) > 0 {
+		message["attachments"] = attachments
+	}
+	body := map[string]any{"message": message}
 	if err := c.call(ctx, http.MethodPost, "api/conversations/"+url.PathEscape(threadKey)+"/messages", nil, body, nil); err != nil {
 		return "", err
 	}
