@@ -501,9 +501,16 @@ func (c *Client) ListMessages(ctx context.Context, threadKey string) ([]Message,
 
 // SendMessage posts text with an ID of its own, as the website does. The response
 // doesn't reliably identify the new message, so the caller finds it by its text.
-func (c *Client) SendMessage(ctx context.Context, threadKey, text string) error {
-	body := map[string]any{"message": map[string]any{"text": text, "message_id": newUUID()}}
-	return c.call(ctx, http.MethodPost, "api/conversations/"+url.PathEscape(threadKey)+"/messages", nil, body, nil)
+// SendMessage sends text and returns the ID it gave the message. OLX's reply
+// doesn't identify the message, but the ones the bridge has sent carry IDs of the
+// form it gives, so OLX appears to keep it.
+func (c *Client) SendMessage(ctx context.Context, threadKey, text string) (string, error) {
+	id := newUUID()
+	body := map[string]any{"message": map[string]any{"text": text, "message_id": id}}
+	if err := c.call(ctx, http.MethodPost, "api/conversations/"+url.PathEscape(threadKey)+"/messages", nil, body, nil); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func (c *Client) MarkThreadRead(ctx context.Context, threadKey string) error {

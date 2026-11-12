@@ -285,27 +285,29 @@ func (c *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMe
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	threadKey := string(msg.Portal.ID)
-	if err := c.api.SendMessage(ctx, threadKey, text); err != nil {
+	sending := time.Now()
+	sentID, err := c.api.SendMessage(ctx, threadKey, text)
+	if err != nil {
 		if errors.Is(err, olx.ErrSignedOut) {
 			c.reportSignedOut(err)
 			return nil, errSignedOutSend(err)
 		}
 		return nil, err
 	}
-	sent := c.findSent(ctx, threadKey, text)
+	sent := c.findSent(ctx, threadKey, text, sentID, sending)
 	timestamp := olx.ParseTime(sent.CreatedAt, c.location)
 	if timestamp.IsZero() {
-		timestamp = time.Now()
+		timestamp = sending
 	}
 	id := networkid.MessageID(sent.Key())
 	if id == "" {
-		// A later poll will bring it in again, which beats losing track of it.
-		zerolog.Ctx(ctx).Warn().Msg("OLX didn't return the ID of a sent message")
-		id = networkid.MessageID("local:" + string(msg.Event.ID))
-	} else {
-		// Handled after this message is saved, as the portal takes events in turn.
-		c.queueDelivered(msg.Portal.PortalKey, bridgev2.EventSender{Sender: msg.Portal.OtherUserID}, id)
+		// Kept under the ID it was sent with, which OLX appears to keep, so the
+		// poll that brings it in recognises it rather than bridging it again.
+		zerolog.Ctx(ctx).Warn().Msg("Couldn't find a sent OLX message yet, so it's kept under the ID it was sent with")
+		id = networkid.MessageID(sentID)
 	}
+	// Handled after this message is saved, as the portal takes events in turn.
+	c.queueDelivered(msg.Portal.PortalKey, bridgev2.EventSender{Sender: msg.Portal.OtherUserID}, id)
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
 			ID:        id,
@@ -315,17 +317,38 @@ func (c *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMe
 	}, nil
 }
 
-// findSent looks up a message just sent, whose POST response doesn't identify it.
-func (c *Client) findSent(ctx context.Context, threadKey, text string) *olx.Message {
-	messages, err := c.api.ListMessages(ctx, threadKey)
-	if err != nil {
-		zerolog.Ctx(ctx).Warn().Err(err).Msg("Couldn't look up a sent OLX message")
-		return &olx.Message{}
-	}
-	sortMessages(messages, c.location)
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Type == olx.MessageSent && messages[i].Text == text {
-			return &messages[i]
+// sentLookupDelays are the waits before each look for a message just sent. OLX's
+// list can lag a send by a moment: one was missing half a second after OLX made it.
+var sentLookupDelays = []time.Duration{0, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
+
+// findSent looks up a message just sent, whose POST response doesn't identify it:
+// by the ID it was sent with, or else by its words, among messages no older than
+// the send, so an earlier message saying the same can't be taken for it.
+func (c *Client) findSent(ctx context.Context, threadKey, text, sentID string, sending time.Time) *olx.Message {
+	// Clocks differ, so allow some slack.
+	earliest := sending.Add(-time.Minute)
+	for _, delay := range sentLookupDelays {
+		select {
+		case <-ctx.Done():
+			return &olx.Message{}
+		case <-time.After(delay):
+		}
+		messages, err := c.api.ListMessages(ctx, threadKey)
+		if err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Msg("Couldn't look up a sent OLX message")
+			continue
+		}
+		sortMessages(messages, c.location)
+		for i := range messages {
+			if messages[i].Key() == sentID {
+				return &messages[i]
+			}
+		}
+		for i := len(messages) - 1; i >= 0; i-- {
+			m := &messages[i]
+			if m.Type == olx.MessageSent && m.Text == text && !olx.ParseTime(m.CreatedAt, c.location).Before(earliest) {
+				return m
+			}
 		}
 	}
 	return &olx.Message{}

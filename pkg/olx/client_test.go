@@ -114,11 +114,12 @@ func TestSendAndRead(t *testing.T) {
 		}
 		fmt.Fprint(w, `{"data":{}}`)
 	}, goodTokens())
-	if err := client.SendMessage(context.Background(), "c1", "Cześć"); err != nil {
+	id, err := client.SendMessage(context.Background(), "c1", "Cześć")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if sent["message"]["text"] != "Cześć" || len(sent["message"]["message_id"]) != 36 {
-		t.Errorf("sent %v", sent)
+	if sent["message"]["text"] != "Cześć" || len(sent["message"]["message_id"]) != 36 || sent["message"]["message_id"] != id {
+		t.Errorf("sent %v, returned %q", sent, id)
 	}
 	if err := client.MarkThreadRead(context.Background(), "c1"); err != nil {
 		t.Fatal(err)
