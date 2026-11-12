@@ -60,8 +60,10 @@ func (c *OLXConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 	return &bridgev2.NetworkGeneralCapabilities{}
 }
 
+// GetBridgeInfoVersion makes the bridge send existing rooms their features again
+// when the second number goes up. Raise it whenever roomFeatures changes.
 func (c *OLXConnector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 1
+	return 1, 2
 }
 
 func (c *OLXConnector) GetDBMetaTypes() database.MetaTypes {
