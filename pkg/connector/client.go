@@ -340,24 +340,31 @@ func (c *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMe
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	threadKey := string(msg.Portal.ID)
-	var attachments []olx.SentAttachment
-	if file != nil {
-		uploaded, err := c.upload(ctx, msg, file)
-		if errors.Is(err, olx.ErrSignedOut) {
-			c.reportSignedOut(err)
-			return nil, errSignedOutSend(err)
-		} else if err != nil {
-			return nil, err
-		}
-		attachments = append(attachments, uploaded)
-	}
 	sending := time.Now()
-	sentID, err := c.api.SendMessage(ctx, threadKey, text, attachments...)
-	if err != nil {
-		if errors.Is(err, olx.ErrSignedOut) {
-			c.reportSignedOut(err)
-			return nil, errSignedOutSend(err)
+	sentID := olx.NewMessageID()
+	var attachments []olx.SentAttachment
+	// Tried again for a while if OLX can't be reached, as on waking or a dropped
+	// connection, under the one ID so it can't go out twice.
+	err := whileUnreachable(ctx, func(attempt int) error {
+		if file != nil && len(attachments) == 0 {
+			uploaded, err := c.upload(ctx, msg, file)
+			if err != nil {
+				return err
+			}
+			attachments = append(attachments, uploaded)
 		}
+		// A try that got no answer may still have reached OLX.
+		if attempt > 0 && c.hasMessage(ctx, threadKey, sentID) {
+			return nil
+		}
+		return c.api.SendMessageAs(ctx, threadKey, sentID, text, attachments...)
+	})
+	if errors.Is(err, olx.ErrSignedOut) {
+		c.reportSignedOut(err)
+		return nil, errSignedOutSend(err)
+	} else if olx.IsUnreachable(err) {
+		return nil, errUnreachableSend(err)
+	} else if err != nil {
 		return nil, err
 	}
 	sent := c.findSent(ctx, threadKey, text, sentID, sending)
@@ -385,6 +392,54 @@ func (c *Client) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMe
 			Timestamp: timestamp,
 		},
 	}, nil
+}
+
+// sendRetryDelays are the waits before each further try of a send that couldn't
+// reach OLX: about a minute in all, enough for a connection to come back.
+var sendRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second}
+
+// whileUnreachable runs a step, and again after each wait for as long as it fails
+// because OLX can't be reached. Anything OLX itself answers ends it at once.
+func whileUnreachable(ctx context.Context, step func(attempt int) error) error {
+	err := step(0)
+	for attempt, delay := range sendRetryDelays {
+		if !olx.IsUnreachable(err) {
+			return err
+		}
+		zerolog.Ctx(ctx).Warn().Err(err).Dur("retry_in", delay).Msg("Couldn't reach OLX to send, trying again")
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(delay):
+		}
+		err = step(attempt + 1)
+	}
+	return err
+}
+
+// hasMessage reports whether a thread already has a message with this ID.
+func (c *Client) hasMessage(ctx context.Context, threadKey, id string) bool {
+	messages, err := c.api.ListMessages(ctx, threadKey)
+	if err != nil {
+		return false
+	}
+	for _, message := range messages {
+		if message.Key() == id {
+			return true
+		}
+	}
+	return false
+}
+
+// errUnreachableSend tells the person a message didn't go out because OLX
+// couldn't be reached, as a status every Matrix client shows, and that sending
+// it again may work.
+func errUnreachableSend(err error) error {
+	return bridgev2.WrapErrorInStatus(err).
+		WithStatus(event.MessageStatusRetriable).
+		WithErrorReason(event.MessageStatusNetworkError).
+		WithMessage("Not sent: OLX couldn't be reached. Check your connection, then send it again.").
+		WithIsCertain(true)
 }
 
 // caption is the words sent with a file: its body, when that isn't just its name.

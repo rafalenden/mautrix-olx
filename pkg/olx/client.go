@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -613,16 +614,40 @@ func offerState(name string) (OfferState, bool) {
 // doesn't identify the message, but the ones the bridge has sent carry IDs of the
 // form it gives, so OLX appears to keep it.
 func (c *Client) SendMessage(ctx context.Context, threadKey, text string, attachments ...SentAttachment) (string, error) {
-	id := newUUID()
+	id := NewMessageID()
+	return id, c.SendMessageAs(ctx, threadKey, id, text, attachments...)
+}
+
+// NewMessageID makes the ID a message is sent with.
+func NewMessageID() string { return newUUID() }
+
+// SendMessageAs sends a message under an ID made beforehand, so a send that's
+// tried again goes out under the same one.
+func (c *Client) SendMessageAs(ctx context.Context, threadKey, id, text string, attachments ...SentAttachment) error {
 	message := map[string]any{"text": text, "message_id": id}
 	if len(attachments) > 0 {
 		message["attachments"] = attachments
 	}
 	body := map[string]any{"message": message}
-	if err := c.call(ctx, http.MethodPost, "api/conversations/"+url.PathEscape(threadKey)+"/messages", nil, body, nil); err != nil {
-		return "", err
+	return c.call(ctx, http.MethodPost, "api/conversations/"+url.PathEscape(threadKey)+"/messages", nil, body, nil)
+}
+
+// IsUnreachable reports whether a request failed without an answer from OLX: no
+// network, a name that didn't resolve, a connection refused or timed out. What
+// OLX itself refuses isn't this.
+func IsUnreachable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
 	}
-	return id, nil
+	var apiErr *Error
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	var netErr net.Error
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	return errors.As(err, &netErr) || errors.As(err, &opErr) || errors.As(err, &dnsErr) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
 }
 
 func (c *Client) MarkThreadRead(ctx context.Context, threadKey string) error {
