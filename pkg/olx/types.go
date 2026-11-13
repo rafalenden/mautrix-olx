@@ -36,6 +36,8 @@ type Thread struct {
 	LatestOwn string
 	// LatestTheirOffer is the other person's newest offer, if they've made one.
 	LatestTheirOffer *Message
+	// Offers is every step of a price negotiation in the thread, oldest first.
+	Offers []Message
 	// ReadByThem is the newest of your messages the other person has read, and
 	// ReadByThemAt when they read it. OLX says when each message was read, but
 	// not when one reached the other side.
@@ -66,6 +68,22 @@ const (
 	MessageReceived MessageType = "received"
 )
 
+// OfferState is what became of an offer. OLX's chat doesn't say: its price
+// negotiation service does, per negotiation.
+type OfferState string
+
+const (
+	// OfferPending is an offer still waiting for an answer.
+	OfferPending OfferState = "pending"
+	// OfferRejected is one that was turned down, or that a newer offer replaced,
+	// which OLX's site shows the same way.
+	OfferRejected OfferState = "rejected"
+	OfferAccepted OfferState = "accepted"
+)
+
+// Settled is whether the offer has been answered, so nothing more happens to it.
+func (s OfferState) Settled() bool { return s == OfferRejected || s == OfferAccepted }
+
 type Attachment struct {
 	Name string
 	URL  string
@@ -82,6 +100,11 @@ type Message struct {
 	IsSystem bool
 	// IsOffer marks a step in a price negotiation, which is answered on OLX.
 	IsOffer bool
+	// NegotiationID is the negotiation an offer belongs to, which is where OLX
+	// keeps what became of it.
+	NegotiationID string
+	// OfferState is what became of an offer, if that's known.
+	OfferState OfferState
 	// ReadAt is when the person it was sent to read it, if they have.
 	ReadAt string
 }

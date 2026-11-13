@@ -82,6 +82,7 @@ func (c *Client) poll(ctx context.Context) error {
 	updates := map[string]ThreadProgress{}
 	defer func() { c.setProgress(ctx, updates) }()
 	c.fixOfferLinksOnce(ctx, threads)
+	c.rewriteOffersIfLanguageChanged(ctx, threads)
 	for _, thread := range threads {
 		key := thread.Key()
 		previous, known := c.progress(key)
@@ -99,11 +100,22 @@ func (c *Client) poll(ctx context.Context) error {
 		// is checked: bridged with its link, or given it now.
 		offer := thread.LatestTheirOffer
 		offerUnchecked := !messagesChanged && offer != nil && networkid.MessageID(offer.Key()) != previous.LinkedOffer
-		if !messagesChanged && !readChanged && !deliveredChanged && !offerUnchecked && previous.UnreadCount == thread.UnreadCount {
+		statesDue := c.offerStatesDue(thread, previous, messagesChanged)
+		if !messagesChanged && !readChanged && !deliveredChanged && !offerUnchecked && !statesDue && previous.UnreadCount == thread.UnreadCount {
 			continue
 		}
 		next := previous
 		next.TotalCount, next.UnreadCount = thread.TotalCount, thread.UnreadCount
+		states := previous.OfferStates
+		if statesDue {
+			if states, err = c.offerStates(ctx, thread, previous.OfferStates); errors.Is(err, olx.ErrSignedOut) || ctx.Err() != nil {
+				return err
+			}
+			next.OfferStates = states
+		}
+		withStates(thread.Offers, states)
+		// The offers bridged in this poll, which carry their state from the start.
+		bridgedNow := map[string]bool{}
 		if messagesChanged {
 			messages, err := c.api.ListMessages(ctx, key)
 			if errors.Is(err, olx.ErrSignedOut) || ctx.Err() != nil {
@@ -114,9 +126,25 @@ func (c *Client) poll(ctx context.Context) error {
 				continue
 			}
 			sortMessages(messages, c.location)
+			withStates(messages, states)
+			fresh, ok := newSince(messages, previous.LastMessage)
+			if !known || !ok {
+				fresh = messages
+			}
+			for _, message := range fresh {
+				bridgedNow[message.Key()] = true
+			}
 			c.queueMessages(thread, previous, known, messages)
 			if len(messages) > 0 {
 				next.LastMessage = networkid.MessageID(messages[len(messages)-1].Key())
+			}
+		}
+		// An offer bridged earlier is edited once something has become of it.
+		for _, message := range thread.Offers {
+			if message.OfferState != previous.OfferStates[message.Key()] && !bridgedNow[message.Key()] &&
+				(message.OfferState.Settled() || previous.OfferStates[message.Key()].Settled()) {
+				c.queueOfferEdit(thread, message)
+				bridgedNow[message.Key()] = true
 			}
 		}
 		if known && previous.UnreadCount > 0 && thread.UnreadCount == 0 && next.LastMessage != "" {
@@ -128,8 +156,9 @@ func (c *Client) poll(ctx context.Context) error {
 			next.Delivered = networkid.MessageID(thread.LatestOwn)
 		}
 		if offerUnchecked {
-			if _, linked := c.linked.Load(offer.Key()); !linked {
-				c.queueOfferLink(thread, *offer)
+			offer.OfferState = states[offer.Key()]
+			if _, linked := c.linked.Load(offer.Key()); !linked && !bridgedNow[offer.Key()] {
+				c.queueOfferEdit(thread, *offer)
 			}
 			next.LinkedOffer = networkid.MessageID(offer.Key())
 		}
@@ -140,6 +169,65 @@ func (c *Client) poll(ctx context.Context) error {
 		updates[key] = next
 	}
 	return nil
+}
+
+// How often to ask again about offers that are still waiting for an answer. One
+// can be accepted or replaced without the chat itself changing.
+const offerStateInterval = 5 * time.Minute
+
+// offerStatesDue is whether to ask OLX what became of a thread's offers: when
+// its messages change, as a new offer replaces the one before, and now and then
+// while any of them is still waiting.
+func (c *Client) offerStatesDue(thread olx.Thread, previous ThreadProgress, messagesChanged bool) bool {
+	waiting := slices.ContainsFunc(thread.Offers, func(offer olx.Message) bool {
+		return offer.NegotiationID != "" && !previous.OfferStates[offer.Key()].Settled()
+	})
+	if !waiting {
+		return false
+	}
+	checked, ok := c.offersChecked[thread.Key()]
+	return messagesChanged || !ok || time.Since(checked) >= offerStateInterval
+}
+
+// offerStates asks what became of a thread's offers, and returns it along with
+// what was known before. A negotiation that can't be read keeps what was known,
+// and is asked about again later: the chat matters more than the labels on it.
+func (c *Client) offerStates(ctx context.Context, thread olx.Thread, known map[string]olx.OfferState) (map[string]olx.OfferState, error) {
+	if c.offersChecked == nil {
+		c.offersChecked = map[string]time.Time{}
+	}
+	c.offersChecked[thread.Key()] = time.Now()
+	states := map[string]olx.OfferState{}
+	for id, state := range known {
+		states[id] = state
+	}
+	asked := map[string]bool{}
+	for _, offer := range thread.Offers {
+		if offer.NegotiationID == "" || asked[offer.NegotiationID] || known[offer.Key()].Settled() {
+			continue
+		}
+		asked[offer.NegotiationID] = true
+		found, err := c.api.OfferStates(ctx, offer.NegotiationID)
+		if errors.Is(err, olx.ErrSignedOut) || ctx.Err() != nil {
+			return states, err
+		} else if err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Str("thread", thread.Key()).Msg("Couldn't read what became of an OLX offer")
+			continue
+		}
+		for id, state := range found {
+			states[id] = state
+		}
+	}
+	return states, nil
+}
+
+// withStates fills in what became of each offer among the messages.
+func withStates(messages []olx.Message, states map[string]olx.OfferState) {
+	for index := range messages {
+		if messages[index].IsOffer {
+			messages[index].OfferState = states[messages[index].Key()]
+		}
+	}
 }
 
 // sortMessages puts messages oldest first, because the API doesn't promise an order.
@@ -283,6 +371,8 @@ func (c *Client) FetchMessages(ctx context.Context, params bridgev2.FetchMessage
 			return nil, err
 		}
 		sortMessages(messages, c.location)
+		progress, _ := c.progress(threadKey)
+		withStates(messages, progress.OfferStates)
 		bundle = &backfillBundle{thread: *thread, messages: messages}
 	}
 	selected := selectForBackfill(bundle.messages, params.AnchorMessage, params.Forward, c.location)
@@ -346,8 +436,10 @@ func (c *Client) convertMessage(ctx context.Context, portal *bridgev2.Portal, in
 			part.Content.MsgType = event.MsgNotice
 		}
 		if answerable(message) {
-			addRespondLink(part.Content, c.api.ConversationURL(message.ThreadUUID))
+			addRespondLink(part.Content, c.api.ConversationURL(message.ThreadUUID), c.texts.under(message.Text).Respond)
 			c.linked.Store(message.Key(), true)
+		} else if message.IsOffer && message.OfferState.Settled() {
+			addOfferState(part.Content, message.OfferState, c.texts.under(message.Text))
 		}
 		converted.Parts = append(converted.Parts, part)
 	}
@@ -362,18 +454,18 @@ func (c *Client) convertMessage(ctx context.Context, portal *bridgev2.Portal, in
 		converted.Parts = append(converted.Parts, &bridgev2.ConvertedMessagePart{
 			ID:      "text",
 			Type:    event.EventMessage,
-			Content: &event.MessageEventContent{MsgType: event.MsgNotice, Body: "This message has no content that can be shown here."},
+			Content: &event.MessageEventContent{MsgType: event.MsgNotice, Body: c.texts.NoContent},
 		})
 	}
 	return converted
 }
 
 func (c *Client) convertFile(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, file olx.Attachment) *event.MessageEventContent {
+	failed := &event.MessageEventContent{MsgType: event.MsgNotice, Body: c.texts.attachmentFailed(file.Name)}
 	name := file.Name
 	if name == "" {
 		name = "attachment"
 	}
-	failed := &event.MessageEventContent{MsgType: event.MsgNotice, Body: "Couldn't load the attachment " + name}
 	data, err := c.api.Download(ctx, file.URL)
 	if err != nil {
 		zerolog.Ctx(ctx).Warn().Err(err).Msg("Couldn't download OLX attachment")
@@ -396,19 +488,34 @@ func (c *Client) convertFile(ctx context.Context, portal *bridgev2.Portal, inten
 }
 
 // answerable is whether a message is an offer for you to answer: the other
-// person's, as there's nothing to answer on your own.
+// person's, as there's nothing to answer on your own, and one that hasn't been
+// accepted, turned down or replaced since.
 func answerable(message olx.Message) bool {
-	return message.IsOffer && message.Type != olx.MessageSent && message.ThreadUUID != ""
+	return message.IsOffer && message.Type != olx.MessageSent && message.ThreadUUID != "" && !message.OfferState.Settled()
+}
+
+// addOfferState says what became of an offer, in the formatted body: a rejected
+// one is struck through, as on OLX's site. The plain body stays OLX's own text,
+// so an offer edited when its state changes isn't shown as reworded.
+func addOfferState(content *event.MessageEventContent, state olx.OfferState, words texts) {
+	text := strings.ReplaceAll(html.EscapeString(content.Body), "\n", "<br>")
+	content.Format = event.FormatHTML
+	switch state {
+	case olx.OfferRejected:
+		content.FormattedBody = "<del>" + text + "</del><br><strong>" + html.EscapeString(words.Rejected) + "</strong>"
+	case olx.OfferAccepted:
+		content.FormattedBody = text + "<br><strong>" + html.EscapeString(words.Accepted) + "</strong>"
+	}
 }
 
 // addRespondLink lets an offer be answered on OLX, as a link in the formatted body,
 // which Matrix clients show. The plain body stays OLX's own text, so adding the link
 // to an offer bridged before doesn't change what it says.
-func addRespondLink(content *event.MessageEventContent, conversationURL string) {
+func addRespondLink(content *event.MessageEventContent, conversationURL, label string) {
 	text := content.Body
 	content.Format = event.FormatHTML
 	content.FormattedBody = strings.ReplaceAll(html.EscapeString(text), "\n", "<br>") +
-		`<br><a href="` + html.EscapeString(conversationURL) + `">Respond on OLX</a>`
+		`<br><a href="` + html.EscapeString(conversationURL) + `">` + html.EscapeString(label) + `</a>`
 }
 
 // listingTopic is the room topic: the advert, its price and a link to it.
@@ -500,7 +607,7 @@ func (c *Client) fixOfferLinksOnce(ctx context.Context, threads []olx.Thread) {
 			}
 			for _, message := range messages {
 				if needsLinkFix(message, added) {
-					c.queueOfferLink(thread, message)
+					c.queueOfferEdit(thread, message)
 				}
 			}
 		}
@@ -513,6 +620,39 @@ func (c *Client) fixOfferLinksOnce(ctx context.Context, threads []olx.Thread) {
 	}
 }
 
+// rewriteOffersIfLanguageChanged edits the offers that carry words of the bridge's
+// own, the link to answer one or what became of it, when those were written in
+// another language: English, before the bridge wrote in the site's.
+func (c *Client) rewriteOffersIfLanguageChanged(ctx context.Context, threads []olx.Thread) {
+	c.metaLock.Lock()
+	written, known := c.meta.TextLanguage, len(c.meta.Threads) > 0
+	c.metaLock.Unlock()
+	if written == c.texts.Language {
+		return
+	}
+	// Chats bridged before the language was recorded were written in English.
+	if known && (written != "" || c.texts.Language != english.Language) {
+		for _, thread := range threads {
+			progress, bridged := c.progress(thread.Key())
+			if !bridged {
+				continue
+			}
+			withStates(thread.Offers, progress.OfferStates)
+			for _, offer := range thread.Offers {
+				if answerable(offer) || offer.OfferState.Settled() {
+					c.queueOfferEdit(thread, offer)
+				}
+			}
+		}
+	}
+	c.metaLock.Lock()
+	defer c.metaLock.Unlock()
+	c.meta.TextLanguage = c.texts.Language
+	if err := c.login.Save(ctx); err != nil {
+		zerolog.Ctx(ctx).Err(err).Msg("Failed to save the language of OLX offers")
+	}
+}
+
 // needsLinkFix is whether an offer bridged earlier has to be edited: every offer
 // if links were never added, otherwise only your own, to take theirs off.
 func needsLinkFix(message olx.Message, linksAdded bool) bool {
@@ -522,9 +662,10 @@ func needsLinkFix(message olx.Message, linksAdded bool) bool {
 	return !linksAdded || message.Type == olx.MessageSent
 }
 
-// queueOfferLink edits one bridged offer to carry its link, or to lose it. A message that was never
-// bridged is skipped by the bridge, which finds nothing to edit.
-func (c *Client) queueOfferLink(thread olx.Thread, message olx.Message) {
+// queueOfferEdit edits one bridged offer to match what it is now: with its link
+// or without, and saying what became of it. A message that was never bridged is
+// skipped by the bridge, which finds nothing to edit.
+func (c *Client) queueOfferEdit(thread olx.Thread, message olx.Message) {
 	id := networkid.MessageID(message.Key())
 	c.main.Bridge.QueueRemoteEvent(c.login, &simplevent.Message[olx.Message]{
 		EventMeta: simplevent.EventMeta{

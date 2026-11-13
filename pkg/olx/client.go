@@ -113,11 +113,13 @@ type Client struct {
 	ChatURL *url.URL
 	// UploadsURL is where files go before a message takes them.
 	UploadsURL string
-	AuthURL    *url.URL
-	SiteCode   string
-	ClientID   string
-	UserUUID   string
-	HTTP       *http.Client
+	// NegotiationsURL is the service that knows what became of each offer.
+	NegotiationsURL *url.URL
+	AuthURL         *url.URL
+	SiteCode        string
+	ClientID        string
+	UserUUID        string
+	HTTP            *http.Client
 	// OnTokens is called whenever a refresh replaces the tokens, so they can be saved.
 	OnTokens func(Tokens)
 
@@ -131,21 +133,22 @@ type Client struct {
 // NewClient makes a client for a site such as www.olx.pl, whose chat is at
 // api.chat.olx.pl and sign-in at login.olx.pl. Any other address is used for both.
 func NewClient(site *url.URL, clientID, userUUID string, tokens Tokens) *Client {
-	chat, auth, code := site, site, "olxpl"
+	chat, auth, negotiations, code := site, site, site, "olxpl"
 	// Any other address, as in tests, takes uploads itself.
 	uploads := site.JoinPath("v1/temp-files").String()
 	if domain, ok := strings.CutPrefix(site.Host, "www.olx."); ok {
 		uploads = uploadsURL
 		chat = &url.URL{Scheme: "https", Host: "api.chat.olx." + domain}
 		auth = &url.URL{Scheme: "https", Host: "login.olx." + domain}
+		negotiations = &url.URL{Scheme: "https", Host: domain + ".ps.prd.eu.olx.org"}
 		code = "olx" + domain
 	}
 	return &Client{
 		SiteURL: site, ChatURL: chat, AuthURL: auth, SiteCode: code, ClientID: clientID, UserUUID: userUUID,
-		UploadsURL: uploads,
-		HTTP:       &http.Client{Timeout: 60 * time.Second},
-		tokens:     tokens,
-		users:      map[int64]*User{},
+		UploadsURL: uploads, NegotiationsURL: negotiations,
+		HTTP:   &http.Client{Timeout: 60 * time.Second},
+		tokens: tokens,
+		users:  map[int64]*User{},
 	}
 }
 
@@ -357,6 +360,11 @@ func (c *Client) toThread(conversation chatConversation) Thread {
 			break
 		}
 	}
+	for _, message := range messages {
+		if message.IsOffer {
+			thread.Offers = append(thread.Offers, message)
+		}
+	}
 	for _, message := range slices.Backward(messages) {
 		if message.Type == MessageSent && !message.IsSystem && message.ReadAt != "" {
 			thread.ReadByThem, thread.ReadByThemAt = message.Key(), message.ReadAt
@@ -383,9 +391,13 @@ func (c *Client) toMessages(conversation chatConversation) []Message {
 			message.Type = MessageSent
 		}
 		var extras struct {
-			Text string `json:"text"`
+			Text          string `json:"text"`
+			NegotiationID string `json:"negotiationId"`
 		}
 		_ = json.Unmarshal(source.Extras, &extras)
+		if message.IsOffer {
+			message.NegotiationID = extras.NegotiationID
+		}
 		// OLX's own lines open with a heading such as "• Automatyczna wiadomość
 		// od OLX •", and keep the line without it in extras. One can be listed
 		// for a moment before it's marked as OLX's, filed under whoever's
@@ -534,6 +546,65 @@ func (c *Client) ListMessages(ctx context.Context, threadKey string) ([]Message,
 		return nil, err
 	}
 	return c.toMessages(*conversation), nil
+}
+
+// OfferStates asks what became of each offer in a negotiation, by message ID.
+// The chat lists an offer the same way whatever happened to it, so this is the
+// only place that says one was accepted, turned down or replaced. Offers in a
+// state the bridge doesn't know are left out.
+func (c *Client) OfferStates(ctx context.Context, negotiationID string) (map[string]OfferState, error) {
+	target := c.NegotiationsURL.JoinPath("price-negotiations/v1/negotiation", url.PathEscape(negotiationID), "messages")
+	response, err := c.authorized(ctx, func() (*http.Request, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Accept", "application/json")
+		return request, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 300 {
+		return nil, readError(response)
+	}
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+	var negotiation struct {
+		Messages []struct {
+			MessageID string `json:"messageId"`
+			Proposal  struct {
+				State string `json:"state"`
+			} `json:"proposal"`
+		} `json:"messages"`
+	}
+	if err = decode(data, &negotiation); err != nil {
+		return nil, err
+	}
+	states := map[string]OfferState{}
+	for _, message := range negotiation.Messages {
+		if state, ok := offerState(message.Proposal.State); ok && message.MessageID != "" {
+			states[message.MessageID] = state
+		}
+	}
+	return states, nil
+}
+
+// offerState reads the service's name for a state. A replaced offer counts as
+// rejected, as on OLX's site, which shows both as "Rejected".
+func offerState(name string) (OfferState, bool) {
+	switch strings.ToUpper(name) {
+	case "PENDING":
+		return OfferPending, true
+	case "REPLACED", "REJECTED", "DECLINED":
+		return OfferRejected, true
+	case "ACCEPTED":
+		return OfferAccepted, true
+	}
+	return "", false
 }
 
 // SendMessage posts text with an ID of its own, as the website does. The response

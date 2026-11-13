@@ -41,6 +41,9 @@ type UserLoginMetadata struct {
 	// OwnOfferLinksRemoved records that your own offers, which carried that link
 	// for a while though there's nothing to answer on them, have lost it.
 	OwnOfferLinksRemoved bool `json:"own_offer_links_removed,omitempty"`
+	// TextLanguage is the language the bridge's own words on offers were last
+	// written in, so they're written again when it changes.
+	TextLanguage string `json:"text_language,omitempty"`
 }
 
 type ThreadProgress struct {
@@ -54,6 +57,8 @@ type ThreadProgress struct {
 	Delivered networkid.MessageID `json:"delivered,omitempty"`
 	// LinkedOffer is the other person's newest offer known to carry its link.
 	LinkedOffer networkid.MessageID `json:"linked_offer,omitempty"`
+	// OfferStates is what became of each offer, by message ID, as last bridged.
+	OfferStates map[string]olx.OfferState `json:"offer_states,omitempty"`
 }
 
 // Client is one signed-in OLX account.
@@ -63,6 +68,8 @@ type Client struct {
 	api   *olx.Client
 	// The time zone of the site's timestamps.
 	location *time.Location
+	// What the bridge writes into chats itself, in the site's language.
+	texts siteWords
 
 	// Held while talking to OLX about messages, so a poll and a send can't overlap.
 	lock sync.Mutex
@@ -72,6 +79,9 @@ type Client struct {
 
 	// Offers given their link since the bridge started, by message ID.
 	linked sync.Map
+	// When each thread's offers were last asked about, by thread. Only the
+	// polling loop uses it.
+	offersChecked map[string]time.Time
 
 	stop context.CancelFunc
 	done chan struct{}
@@ -95,7 +105,7 @@ func newClient(main *OLXConnector, login *bridgev2.UserLogin) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &Client{main: main, login: login, meta: meta, location: siteLocation(address)}
+	client := &Client{main: main, login: login, meta: meta, location: siteLocation(address), texts: textsFor(address)}
 	client.api = olx.NewClient(site, meta.WebsiteClientID, meta.UserUUID, meta.Tokens)
 	client.api.OnTokens = client.saveTokens
 	return client, nil

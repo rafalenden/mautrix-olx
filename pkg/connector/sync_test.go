@@ -104,12 +104,12 @@ func TestEverySiteHasAFlowAndATimeZone(t *testing.T) {
 
 func TestRespondLinkIsInBothBodies(t *testing.T) {
 	content := &event.MessageEventContent{MsgType: event.MsgText, Body: "Nowa propozycja: <1300.00 zł>"}
-	addRespondLink(content, "https://www.olx.pl/myaccount/answer/c1/")
+	addRespondLink(content, "https://www.olx.pl/myaccount/answer/c1/", textsFor("www.olx.pl").Respond)
 	if content.Body != "Nowa propozycja: <1300.00 zł>" {
 		t.Errorf("plain body %q", content.Body)
 	}
 	if content.Format != event.FormatHTML ||
-		content.FormattedBody != `Nowa propozycja: &lt;1300.00 zł&gt;<br><a href="https://www.olx.pl/myaccount/answer/c1/">Respond on OLX</a>` {
+		content.FormattedBody != `Nowa propozycja: &lt;1300.00 zł&gt;<br><a href="https://www.olx.pl/myaccount/answer/c1/">Odpowiedz na OLX</a>` {
 		t.Errorf("formatted body %q", content.FormattedBody)
 	}
 }
@@ -192,6 +192,117 @@ func TestMsgTypeFor(t *testing.T) {
 	} {
 		if got := msgTypeFor(mimeType); got != want {
 			t.Errorf("%s gave %s", mimeType, got)
+		}
+	}
+}
+
+// A rejected offer is struck through and says so, and can't be answered any more.
+// The plain body stays as OLX wrote it.
+func TestSettledOffersSayWhatBecameOfThem(t *testing.T) {
+	rejected := &event.MessageEventContent{Body: "Nowa propozycja: 100.00 zł"}
+	addOfferState(rejected, olx.OfferRejected, textsFor("www.olx.pl").texts)
+	if rejected.Body != "Nowa propozycja: 100.00 zł" || rejected.FormattedBody != "<del>Nowa propozycja: 100.00 zł</del><br><strong>Odrzucono</strong>" {
+		t.Errorf("rejected = %q / %q", rejected.Body, rejected.FormattedBody)
+	}
+	accepted := &event.MessageEventContent{Body: "a <b"}
+	addOfferState(accepted, olx.OfferAccepted, english)
+	if accepted.FormattedBody != "a &lt;b<br><strong>Accepted</strong>" {
+		t.Errorf("accepted = %q", accepted.FormattedBody)
+	}
+	theirs := olx.Message{IsOffer: true, Type: olx.MessageReceived, ThreadUUID: "t"}
+	if !answerable(theirs) {
+		t.Error("their waiting offer should be answerable")
+	}
+	theirs.OfferState = olx.OfferRejected
+	if answerable(theirs) {
+		t.Error("a rejected offer can't be answered")
+	}
+}
+
+// Offers are asked about when the chat changes and now and then while one waits,
+// but not once every one of them is settled.
+func TestWhenOfferStatesAreAsked(t *testing.T) {
+	client := &Client{}
+	thread := olx.Thread{UUID: "t", Offers: []olx.Message{{UUID: "a", IsOffer: true, NegotiationID: "n"}}}
+	if !client.offerStatesDue(thread, ThreadProgress{}, false) {
+		t.Error("offers never asked about should be")
+	}
+	client.offersChecked = map[string]time.Time{"t": time.Now()}
+	if client.offerStatesDue(thread, ThreadProgress{}, false) {
+		t.Error("asked again straight away")
+	}
+	if !client.offerStatesDue(thread, ThreadProgress{}, true) {
+		t.Error("a changed chat should ask again")
+	}
+	client.offersChecked["t"] = time.Now().Add(-offerStateInterval)
+	if !client.offerStatesDue(thread, ThreadProgress{}, false) {
+		t.Error("a waiting offer should be asked about again after a while")
+	}
+	settled := ThreadProgress{OfferStates: map[string]olx.OfferState{"a": olx.OfferRejected}}
+	if client.offerStatesDue(thread, settled, true) {
+		t.Error("settled offers were asked about")
+	}
+	messages := []olx.Message{{UUID: "a", IsOffer: true}, {UUID: "b"}}
+	withStates(messages, map[string]olx.OfferState{"a": olx.OfferRejected, "b": olx.OfferAccepted})
+	if messages[0].OfferState != olx.OfferRejected || messages[1].OfferState != "" {
+		t.Errorf("unexpected states %+v", messages)
+	}
+}
+
+// The bridge's own words are in the site's language, and every site has them all.
+func TestEverySiteHasItsTexts(t *testing.T) {
+	for _, site := range sites {
+		words := textsFor("www.olx." + site.domain)
+		if words.Language == "" || words.Language == english.Language {
+			t.Errorf("olx.%s has no language of its own", site.domain)
+		}
+		if words.Respond == "" || words.Rejected == "" || words.Accepted == "" || words.NoContent == "" ||
+			!strings.Contains(words.AttachmentFailed, "%s") {
+			t.Errorf("olx.%s is missing words: %+v", site.domain, words)
+		}
+	}
+	if got := textsFor("https://www.olx.pl/").Rejected; got != "Odrzucono" {
+		t.Errorf("Polish rejected = %q", got)
+	}
+	if textsFor("127.0.0.1:8080").texts != english {
+		t.Error("an unknown site should get English")
+	}
+	if got := textsFor("www.olx.ro").attachmentFailed(""); got != "Atașamentul nu a putut fi încărcat" {
+		t.Errorf("unnamed attachment = %q", got)
+	}
+	if got := english.attachmentFailed("a.pdf"); got != "Couldn't load the attachment a.pdf" {
+		t.Errorf("named attachment = %q", got)
+	}
+}
+
+// Where a site is used in two languages, what goes under an offer follows the
+// language of OLX's line, told by the letters only one of them has.
+func TestTextsFollowTheOffersLine(t *testing.T) {
+	ukraine, kazakhstan, poland := textsFor("www.olx.ua"), textsFor("www.olx.kz"), textsFor("www.olx.pl")
+	for _, test := range []struct {
+		site siteWords
+		line string
+		want string
+	}{
+		{ukraine, "Нова пропозиція: 100 грн", "uk"},
+		{ukraine, "НОВА ПРОПОЗИЦІЯ: 100 грн", "uk"},
+		{ukraine, "Новое предложение: 100 грн", "ru"},
+		{ukraine, "100", "uk"},
+		{ukraine, "", "uk"},
+		{kazakhstan, "Жаңа ұсыныс: 100 ₸", "kk"},
+		{kazakhstan, "Новое предложение: 100 ₸", "ru"},
+		{kazakhstan, "100", "ru"},
+		{poland, "Новое предложение: 100 zł", "pl"},
+		{poland, "Nowa propozycja: 100 zł", "pl"},
+	} {
+		if got := test.site.under(test.line).Language; got != test.want {
+			t.Errorf("under %q: %s, want %s", test.line, got, test.want)
+		}
+	}
+	for _, words := range []texts{ukrainian, russian, kazakh} {
+		if words.Respond == "" || words.Rejected == "" || words.Accepted == "" || words.NoContent == "" ||
+			!strings.Contains(words.AttachmentFailed, "%s") {
+			t.Errorf("%s is missing words: %+v", words.Language, words)
 		}
 	}
 }

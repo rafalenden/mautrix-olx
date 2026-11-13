@@ -356,3 +356,44 @@ func TestThreadKnowsWhatTheyveRead(t *testing.T) {
 		t.Errorf("latest own = %q, want m3", got)
 	}
 }
+
+// The chat lists an offer the same way whatever became of it. The negotiation
+// says, per message, and a replaced offer counts as rejected.
+func TestOfferStatesComeFromTheNegotiation(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/price-negotiations/v1/negotiation/n1/messages" || r.Header.Get("Authorization") == "" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"youAre":"BUYER","messages":[
+			{"messageId":"a","proposal":{"state":"REPLACED"},"actions":[]},
+			{"messageId":"b","proposal":{"state":"ACCEPTED"}},
+			{"messageId":"c","proposal":{"state":"PENDING"},"actions":[{"type":"ACCEPT"}]},
+			{"messageId":"d","proposal":{"state":"SOMETHING_NEW"}},
+			{"messageId":"e"}]}`))
+	}, goodTokens())
+	states, err := client.OfferStates(context.Background(), "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 3 || states["a"] != OfferRejected || states["b"] != OfferAccepted || states["c"] != OfferPending {
+		t.Errorf("unexpected states %+v", states)
+	}
+	if !OfferRejected.Settled() || !OfferAccepted.Settled() || OfferPending.Settled() || OfferState("").Settled() {
+		t.Error("only an accepted or rejected offer is settled")
+	}
+}
+
+func TestOffersKeepTheirNegotiation(t *testing.T) {
+	client := NewClient(&url.URL{Scheme: "https", Host: "example.test"}, "c", "me", Tokens{})
+	thread := client.toThread(chatConversation{ID: "c", Messages: []chatMessage{
+		{ID: "a", CreatedAt: "2026-01-01T10:00:00Z", Type: "custom:price_negotiation_widget_buyer_proposed", Extras: json.RawMessage(`{"negotiationId":"n1"}`)},
+		{ID: "b", CreatedAt: "2026-01-02T10:00:00Z", Text: "Hej", Extras: json.RawMessage(`{"negotiationId":"n2"}`)},
+	}})
+	if len(thread.Offers) != 1 || thread.Offers[0].Key() != "a" || thread.Offers[0].NegotiationID != "n1" {
+		t.Errorf("unexpected offers %+v", thread.Offers)
+	}
+	site, _ := url.Parse("https://www.olx.pl")
+	if host := NewClient(site, "c", "me", Tokens{}).NegotiationsURL.Host; host != "pl.ps.prd.eu.olx.org" {
+		t.Errorf("negotiations host = %s", host)
+	}
+}

@@ -19,7 +19,7 @@ This uses the API behind OLX's website, which OLX doesn't document. It can stop 
 | Chat history | Yes, as much as OLX returns | |
 | Marking a chat as read | Yes | Yes |
 | Delivered and read | Yes: a message OLX accepted is delivered, and OLX says when it was read | |
-| Offers | As text. The other person's carry a link to answer them on OLX | |
+| Offers | As text, saying once one is rejected or accepted. The other person's carry a link to answer them on OLX. The bridge's own words are in the site's language | |
 | OLX's own lines | As notices from the bridge bot | |
 
 The bridge has no replies, reactions, edits or typing indicators, and chats begin on OLX.
