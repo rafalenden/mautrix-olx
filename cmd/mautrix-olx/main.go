@@ -15,7 +15,7 @@ var (
 
 var m = mxmain.BridgeMain{
 	Name:        "mautrix-olx",
-	URL:         "https://github.com/rafalenden/servuso/tree/main/bridges/olx",
+	URL:         "https://github.com/rafalenden/mautrix-olx",
 	Description: "A Matrix-OLX puppeting bridge.",
 	Version:     "0.1.0",
 	Connector:   &connector.OLXConnector{},
