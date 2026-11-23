@@ -479,6 +479,8 @@ func (c *Client) listing(conversation chatConversation) Listing {
 
 // AdvertURL is a link to an advert's page. OLX's links end in the advert ID in
 // base 62, and the site redirects any words before it to the advert's own.
+// OLX's digits have w before v, and W before V: with them in the alphabet's
+// order, an ID with either in it led to someone else's advert.
 func (c *Client) AdvertURL(id int64) string {
 	return c.SiteURL.JoinPath("d/oferta", "ogloszenie-ID"+base62(id)+".html").String()
 }
@@ -489,7 +491,7 @@ func (c *Client) ConversationURL(id string) string {
 }
 
 func base62(n int64) string {
-	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	const alphabet = "0123456789abcdefghijklmnopqrstuwvxyzABCDEFGHIJKLMNOPQRSTUWVXYZ"
 	if n <= 0 {
 		return "0"
 	}

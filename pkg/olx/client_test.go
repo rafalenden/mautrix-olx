@@ -271,7 +271,9 @@ func TestLinks(t *testing.T) {
 	if got := client.ConversationURL("8f0c"); got != "https://www.olx.pl/myaccount/answer/8f0c/" {
 		t.Errorf("got %s", got)
 	}
-	for n, want := range map[int64]string{0: "0", 9: "9", 10: "a", 36: "A", 61: "Z", 62: "10"} {
+	// OLX's digits swap v with w, and V with W.
+	for n, want := range map[int64]string{0: "0", 9: "9", 10: "a", 30: "u", 31: "w", 32: "v", 33: "x", 36: "A",
+		56: "U", 57: "W", 58: "V", 59: "X", 61: "Z", 62: "10"} {
 		if got := base62(n); got != want {
 			t.Errorf("base62(%d) = %s", n, got)
 		}
